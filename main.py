@@ -353,6 +353,7 @@ async def send_main_menu(target: types.Message | types.CallbackQuery):
         inline_keyboard=[
             [types.InlineKeyboardButton(text="✨ Наши услуги", callback_data="show_services_main_menu")],
             [types.InlineKeyboardButton(text="📸 Фотографии салона", callback_data="show_salon_photos")],
+            [types.InlineKeyboardButton(text="📍 Как до нас добраться?", url = "https://yandex.ru/maps/54/yekaterinburg/?from=api-maps&ll=60.607417%2C56.855225&mode=routes&origin=jsapi_2_1_79&rtext=~56.855225%2C60.607417&rtt=mt&ruri=~ymapsbm1%3A%2F%2Forg%3Foid%3D176318285490&z=13.89")],
             [types.InlineKeyboardButton(text="💌 Связаться с администратором",
                                         url=f"tg://resolve?domain={ADMIN_USERNAME}")],
         ]
