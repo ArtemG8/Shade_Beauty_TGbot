@@ -3,7 +3,7 @@ import logging
 
 from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart, StateFilter # Убедитесь, что StateFilter импортирован
+from aiogram.filters import CommandStart, StateFilter
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import InputMediaPhoto, Message
 from aiogram.fsm.context import FSMContext
@@ -52,10 +52,12 @@ class AdminState(StatesGroup):
     edit_service_select = State()
     edit_service_choose_field = State()
     edit_service_new_value = State()
-    # temporary state to hold service data while editing multiple fields
     editing_service_data = State()
 
     delete_service_select = State()
+
+    # NEW STATE for admin viewing public services
+    viewing_public_services_mode = State()
 
 
 # --- Вспомогательная функция для отправки главного меню ---
@@ -261,10 +263,12 @@ async def process_photos_callback(callback: types.CallbackQuery):
     )
 
 
-@dp.callback_query(F.data == "back_to_main_menu")
+# ИЗМЕНЕНИЕ ЗДЕСЬ: Добавляем StateFilter, чтобы этот обработчик не срабатывал, когда админ находится в админ-панели
+@dp.callback_query(F.data == "back_to_main_menu", ~StateFilter(AdminState))
 async def process_back_to_main_menu(callback: types.CallbackQuery, state: FSMContext):
     """
-    Обработчик нажатия на кнопку "Назад в главное меню".
+    Обработчик нажатия на кнопку "Назад в главное меню" для ОБЫЧНЫХ ПОЛЬЗОВАТЕЛЕЙ.
+    Не срабатывает, если пользователь находится в любом админском FSM-состоянии.
     """
     await state.clear()
     await callback.answer()
@@ -296,13 +300,17 @@ def get_admin_main_markup():
         inline_keyboard=[
             [types.InlineKeyboardButton(text="Управление категориями", callback_data="admin_manage_categories")],
             [types.InlineKeyboardButton(text="Управление услугами", callback_data="admin_manage_services")],
+            [types.InlineKeyboardButton(text="👁️ Посмотреть услуги (как пользователь)", callback_data="admin_view_public_services")],
             [types.InlineKeyboardButton(text="Выйти из админ-панели", callback_data="admin_exit")],
         ]
     )
 
-@admin_router.callback_query(F.data == "admin_main_menu", AdminState.in_admin_panel)
-@admin_router.callback_query(F.data == "admin_main_menu", AdminState.manage_categories)
-@admin_router.callback_query(F.data == "admin_main_menu", AdminState.manage_services)
+@admin_router.callback_query(F.data == "admin_main_menu", StateFilter(
+    AdminState.in_admin_panel,
+    AdminState.manage_categories,
+    AdminState.manage_services,
+    AdminState.viewing_public_services_mode
+))
 async def admin_main_menu_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработчик кнопки возврата в главное меню админ-панели."""
     await callback.answer()
@@ -318,6 +326,135 @@ async def admin_exit_callback(callback: types.CallbackQuery, state: FSMContext):
     await send_main_menu(callback)
 
 
+# --- НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ПРОСМОТРА УСЛУГ АДМИНОМ (как пользователь) ---
+# ИЗМЕНЕНИЕ ЗДЕСЬ: Добавляем AdminState.viewing_public_services_mode в StateFilter
+@admin_router.callback_query(F.data == "admin_view_public_services", StateFilter(AdminState.in_admin_panel, AdminState.viewing_public_services_mode))
+async def admin_show_public_services_main_menu(callback: types.CallbackQuery, state: FSMContext):
+    """
+    Обработчик нажатия на кнопку "Посмотреть услуги (как пользователь)" в админ-панели.
+    Показывает основные категории услуг с возможностью вернуться в админку.
+    """
+    await callback.answer(text="Загрузка категорий услуг...", show_alert=False)
+    await state.set_state(AdminState.viewing_public_services_mode)
+
+    markup = types.InlineKeyboardMarkup(inline_keyboard=[])
+    main_categories = db_utils.get_main_categories()
+
+    for category in main_categories:
+        markup.inline_keyboard.append([
+            types.InlineKeyboardButton(text=f"✨ {category['title']}", callback_data=f"admin_view_cat::{category['slug']}")
+        ])
+
+    markup.inline_keyboard.append([
+        types.InlineKeyboardButton(text="⬅️ Назад в админ-панель", callback_data="admin_main_menu")
+    ])
+
+    await callback.message.edit_text(
+        "<b>💎 Наши услуги (режим просмотра для админа):</b>\n"
+        "Выберите интересующую категорию:",
+        reply_markup=markup
+    )
+
+
+@admin_router.callback_query(F.data.startswith("admin_view_cat::"), AdminState.viewing_public_services_mode)
+async def admin_view_service_category_callback(callback: types.CallbackQuery):
+    """
+    Обработчик нажатия на кнопку категории услуг в режиме просмотра админом.
+    Либо показывает подкатегории, либо выводит список услуг, получая данные из БД.
+    """
+    await callback.answer(text="Загрузка услуг...", show_alert=False)
+
+    category_slug = callback.data.split("::")[1]
+    current_category = db_utils.get_category_by_slug(category_slug)
+    if not current_category:
+        await callback.message.answer("Извините, информация по данной категории не найдена.")
+        # Исправлено: возвращаемся в меню категорий просмотра для админа
+        await admin_show_public_services_main_menu(callback, None) # Передаем None для state, т.к. уже в FSM-состоянии
+        return
+
+    subcategories = db_utils.get_subcategories(category_slug)
+
+    if subcategories:
+        markup = types.InlineKeyboardMarkup(inline_keyboard=[])
+        for sub_data in subcategories:
+            markup.inline_keyboard.append([
+                types.InlineKeyboardButton(text=f"▪️ {sub_data['title']}",
+                                           callback_data=f"admin_view_sub::{category_slug}::{sub_data['slug']}")
+            ])
+        markup.inline_keyboard.append([
+            types.InlineKeyboardButton(text="⬅️ Назад к категориям услуг", callback_data="admin_view_public_services")
+        ])
+
+        await callback.message.edit_text(
+            f"<b>{current_category['title']}:</b>\n"
+            "Выберите подкатегорию:",
+            reply_markup=markup
+        )
+    else:
+        services = db_utils.get_services_by_category_slug(category_slug)
+
+        service_text = f"<b>{current_category['title']}:</b>\n\n"
+        if services:
+            for item in services:
+                service_text += f"▪️ <b>{item['name']}</b> - {item['price']}\n"
+                if "description" in item:
+                    service_text += f"   <i>{item['description']}</i>\n"
+        else:
+            service_text += "Услуги в данной категории пока отсутствуют."
+
+        markup = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text="⬅️ Назад к категориям услуг",
+                                            callback_data="admin_view_public_services")],
+            ]
+        )
+        await callback.message.edit_text(service_text, reply_markup=markup)
+
+
+@admin_router.callback_query(F.data.startswith("admin_view_sub::"), AdminState.viewing_public_services_mode)
+async def admin_view_service_subcategory_callback(callback: types.CallbackQuery):
+    """
+    Обработчик нажатия на кнопку подкатегории услуг в режиме просмотра админом.
+    Выводит список услуг для этой подкатегории.
+    """
+    await callback.answer(text="Загрузка услуг...", show_alert=False)
+
+    parts = callback.data.split('::')
+    if len(parts) < 3:
+        await callback.message.answer("Извините, некорректные данные подкатегории.")
+        # Исправлено: возвращаемся в меню категорий просмотра для админа
+        await admin_show_public_services_main_menu(callback, None)
+        return
+
+    parent_category_slug = parts[1]
+    subcategory_slug = parts[2]
+
+    subcategory_data = db_utils.get_category_by_slug(subcategory_slug)
+
+    if not subcategory_data:
+        await callback.message.answer("Извините, информация по данной подкатегории не найдена.")
+        # Исправлено: возвращаемся в меню категорий просмотра для админа
+        await admin_show_public_services_main_menu(callback, None)
+        return
+
+    services = db_utils.get_services_by_category_slug(subcategory_slug)
+
+    service_text = f"<b>{subcategory_data['title']}:</b>\n\n"
+    if services:
+        for item in services:
+            service_text += f"▪️ <b>{item['name']}</b> - {item['price']}\n"
+            if "description" in item:
+                service_text += f"   <i>{item['description']}</i>\n"
+    else:
+        service_text += "Услуги в данной подкатегории пока отсутствуют."
+
+    markup = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text="⬅️ Назад к подкатегориям", callback_data=f"admin_view_cat::{parent_category_slug}")],
+        ]
+    )
+    await callback.message.edit_text(service_text, reply_markup=markup)
+
 # --- Управление категориями ---
 def get_manage_categories_markup():
     return types.InlineKeyboardMarkup(
@@ -329,7 +466,6 @@ def get_manage_categories_markup():
         ]
     )
 
-# ИСПРАВЛЕНИЕ ЗДЕСЬ: Расширяем StateFilter, чтобы кнопка "Отмена" работала из всех состояний управления категориями
 @admin_router.callback_query(F.data == "admin_manage_categories", StateFilter(
     AdminState.in_admin_panel,
     AdminState.add_category_slug,
@@ -358,7 +494,7 @@ async def admin_add_category_start(callback: types.CallbackQuery, state: FSMCont
 @admin_router.message(AdminState.add_category_slug)
 async def admin_add_category_get_slug(message: types.Message, state: FSMContext):
     slug = message.text.strip().lower()
-    if not slug.replace('_', '').isalnum(): # Простая проверка на латинские буквы и цифры
+    if not slug.replace('_', '').isalnum():
         await message.answer("SLUG должен содержать только латинские буквы, цифры и символ подчеркивания. Попробуйте еще раз.")
         return
 
@@ -451,7 +587,7 @@ async def admin_edit_category_set_new_title(message: types.Message, state: FSMCo
     data = await state.get_data()
     category_id = data.get("editing_category_id")
 
-    if category_id is None:
+    if category_id == None:
         await message.answer("Произошла ошибка, ID категории не найден. Начните заново.", reply_markup=get_manage_categories_markup())
         await state.set_state(AdminState.manage_categories)
         return
@@ -513,7 +649,6 @@ def get_manage_services_markup():
         ]
     )
 
-# ИСПРАВЛЕНИЕ ЗДЕСЬ: Расширяем StateFilter, чтобы кнопка "Отмена" работала из всех состояний управления услугами
 @admin_router.callback_query(F.data == "admin_manage_services", StateFilter(
     AdminState.in_admin_panel,
     AdminState.select_category_for_service,
@@ -760,6 +895,7 @@ async def admin_delete_service_select_category(callback: types.CallbackQuery, st
         service_list_text += f"ID: {svc['id']} - <b>{svc['name']}</b> - {svc['price']}\n"
     markup.inline_keyboard.append([types.InlineKeyboardButton(text="Отмена", callback_data="admin_manage_services")])
 
+    await state.update_data(current_service_category_slug_for_edit=category_slug)
     await callback.message.edit_text(service_list_text + "\nВыберите услугу по ID для удаления:", reply_markup=markup)
     await state.set_state(AdminState.delete_service_select)
 
