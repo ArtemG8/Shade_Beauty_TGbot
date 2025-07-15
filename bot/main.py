@@ -3,14 +3,14 @@ import logging
 
 from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart, StateFilter
+from aiogram.filters import CommandStart, StateFilter # Убедитесь, что StateFilter импортирован
 from aiogram.client.default import DefaultBotProperties
 from aiogram.types import InputMediaPhoto, Message
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from services_data import PHOTO_URLS
-import db_utils # Импортируем наш модуль для работы с БД
+import db_utils
 
 # Замените 'YOUR_BOT_TOKEN' на токен вашего бота, полученный от BotFather
 BOT_TOKEN = "8099050356:AAHTmPGZ72er-_tguInYs8raDWHH9We1qcI"
@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Инициализация объекта Bot и Dispatcher
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-admin_router = Router() # Отдельный роутер для админ-панели
+admin_router = Router()
 
 # --- FSM States for Admin Panel ---
 class AdminState(StatesGroup):
@@ -102,7 +102,7 @@ async def command_start_handler(message: types.Message, state: FSMContext) -> No
     """
     Обработчик команды /start. Отправляет приветственное сообщение с инлайн-кнопками.
     """
-    await state.clear() # Очищаем состояние на всякий случай
+    await state.clear()
     await send_main_menu(message)
 
 
@@ -266,7 +266,7 @@ async def process_back_to_main_menu(callback: types.CallbackQuery, state: FSMCon
     """
     Обработчик нажатия на кнопку "Назад в главное меню".
     """
-    await state.clear() # Очищаем состояние при выходе в главное меню
+    await state.clear()
     await callback.answer()
     await send_main_menu(callback)
 
@@ -301,8 +301,8 @@ def get_admin_main_markup():
     )
 
 @admin_router.callback_query(F.data == "admin_main_menu", AdminState.in_admin_panel)
-@admin_router.callback_query(F.data == "admin_main_menu", AdminState.manage_categories) # Для возврата из управления категориями
-@admin_router.callback_query(F.data == "admin_main_menu", AdminState.manage_services) # Для возврата из управления услугами
+@admin_router.callback_query(F.data == "admin_main_menu", AdminState.manage_categories)
+@admin_router.callback_query(F.data == "admin_main_menu", AdminState.manage_services)
 async def admin_main_menu_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработчик кнопки возврата в главное меню админ-панели."""
     await callback.answer()
@@ -329,7 +329,16 @@ def get_manage_categories_markup():
         ]
     )
 
-@admin_router.callback_query(F.data == "admin_manage_categories", AdminState.in_admin_panel)
+# ИСПРАВЛЕНИЕ ЗДЕСЬ: Расширяем StateFilter, чтобы кнопка "Отмена" работала из всех состояний управления категориями
+@admin_router.callback_query(F.data == "admin_manage_categories", StateFilter(
+    AdminState.in_admin_panel,
+    AdminState.add_category_slug,
+    AdminState.add_category_title,
+    AdminState.add_category_parent,
+    AdminState.edit_category_select,
+    AdminState.edit_category_new_title,
+    AdminState.delete_category_select
+))
 async def admin_manage_categories(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(AdminState.manage_categories)
@@ -504,7 +513,18 @@ def get_manage_services_markup():
         ]
     )
 
-@admin_router.callback_query(F.data == "admin_manage_services", AdminState.in_admin_panel)
+# ИСПРАВЛЕНИЕ ЗДЕСЬ: Расширяем StateFilter, чтобы кнопка "Отмена" работала из всех состояний управления услугами
+@admin_router.callback_query(F.data == "admin_manage_services", StateFilter(
+    AdminState.in_admin_panel,
+    AdminState.select_category_for_service,
+    AdminState.add_service_name,
+    AdminState.add_service_price,
+    AdminState.add_service_description,
+    AdminState.edit_service_select,
+    AdminState.edit_service_choose_field,
+    AdminState.edit_service_new_value,
+    AdminState.delete_service_select
+))
 async def admin_manage_services_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.set_state(AdminState.manage_services)
@@ -668,7 +688,7 @@ async def admin_edit_service_choose_field(callback: types.CallbackQuery, state: 
     await callback.message.edit_text(prompt_text,
                                      reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
                                          [types.InlineKeyboardButton(text="Отмена", callback_data="admin_manage_services")]
-                                     ])) # Можно сделать более умную отмену, возвращая на шаг выбора услуги
+                                     ]))
     await state.set_state(AdminState.edit_service_new_value)
 
 @admin_router.message(AdminState.edit_service_new_value)
@@ -684,7 +704,6 @@ async def admin_edit_service_set_new_value(message: types.Message, state: FSMCon
         await state.set_state(AdminState.manage_services)
         return
 
-    # Обновляем данные в словаре current_service_data
     if field_to_edit == "description" and new_value.lower() in ["-", "нет", "none"]:
         current_service_data[field_to_edit] = None
     else:
@@ -695,7 +714,7 @@ async def admin_edit_service_set_new_value(message: types.Message, state: FSMCon
                             current_service_data['price'],
                             current_service_data['description'])
 
-    await state.update_data(editing_service_data=current_service_data) # Обновляем сохраненные данные
+    await state.update_data(editing_service_data=current_service_data)
 
     markup = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="Изменить название", callback_data="edit_svc_field::name")],
@@ -750,7 +769,7 @@ async def admin_delete_service_confirm(callback: types.CallbackQuery, state: FSM
     service = db_utils.get_service_by_id(service_id)
     if not service:
         await callback.message.edit_text("Услуга не найдена. Попробуйте еще раз.", reply_markup=get_manage_services_markup())
-        await state.set_admin_main_menu(AdminState.manage_services)
+        await state.set_state(AdminState.manage_services)
         return
 
     db_utils.delete_service(service_id)
