@@ -9,18 +9,17 @@ from aiogram.types import InputMediaPhoto, Message
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from services_data import PHOTO_URLS
+
+import config_manager
 import db_utils
-
-# Замените 'YOUR_BOT_TOKEN' на токен вашего бота, полученный от BotFather
-BOT_TOKEN = "8099050356:AAHTmPGZ72er-_tguInYs8raDWHH9We1qcI"
-
-# Замените 'YOUR_ADMIN_USERNAME' на реальный юзернейм администратора Telegram (без символа '@')
-ADMIN_USERNAME = "ArtemArtem11111"
-ADMIN_PASSWORD = "ADMINSHADE" # Пароль для входа в админ-панель
 
 # Включаем логирование
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(name)s - %(message)s')
+
+# ЗАГРУЗКА НАСТРОЕК ИЗ config_manager
+BOT_TOKEN = config_manager.get_setting('BOT_TOKEN')
+ADMIN_USERNAME = config_manager.get_setting('ADMIN_USERNAME')
+PHOTO_URLS = config_manager.get_setting('PHOTO_URLS', []) # Пустой список по умолчанию, если нет фото
 
 # Инициализация объекта Bot и Dispatcher
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -59,6 +58,9 @@ class AdminState(StatesGroup):
     # NEW STATE for admin viewing public services
     viewing_public_services_mode = State()
 
+    # NEW STATE for changing admin password
+    change_password_waiting_for_new_password = State()
+
 
 # --- Вспомогательная функция для отправки главного меню ---
 async def send_main_menu(target: types.Message | types.CallbackQuery):
@@ -72,7 +74,7 @@ async def send_main_menu(target: types.Message | types.CallbackQuery):
         inline_keyboard=[
             [types.InlineKeyboardButton(text="✨ Наши услуги", callback_data="show_services_main_menu")],
             [types.InlineKeyboardButton(text="📸 Фотографии салона", callback_data="show_salon_photos")],
-            [types.InlineKeyboardButton(text="📍 Как до нас добраться?", url="https://yandex.ru/maps/54/yekaterinburg/?from=api-maps&ll=60.607417%2C56.855225&mode=routes&origin=jsapi_2_1_79&rtext=~56.855225%2C60.607417&rtt=mt&ruri=~ymapsbm1%3A%2F%2Forg%3Foid%3D176318285490&z=13.89")],
+            [types.InlineKeyboardButton(text="📍 Как до нас добраться?", url="https://yandex.ru/maps/54/yekaterinburg/?from=api-maps&ll=60.607417%2C56.855225&mode=routes&origin=jsapi_2_1_79&rtext=~56.855225%2C60.607417&ruri=~ymapsbm1%3A%2F%2Forg%3Foid%3D176318285490&z=13.89")],
             [types.InlineKeyboardButton(text="💌 Связаться с администратором",
                                         url=f"tg://resolve?domain={ADMIN_USERNAME}")],
         ]
@@ -97,7 +99,7 @@ async def send_main_menu(target: types.Message | types.CallbackQuery):
             await target.message.answer(welcome_message, reply_markup=markup)
 
 
-# --- Обработчики команд и кнопок (Публичная часть) ---
+#Обработчики команд и кнопок
 
 @dp.message(CommandStart())
 async def command_start_handler(message: types.Message, state: FSMContext) -> None:
@@ -242,6 +244,7 @@ async def process_photos_callback(callback: types.CallbackQuery):
     """
     await callback.answer(text="Загрузка фотографий...")
     media_group = []
+
     for url in PHOTO_URLS:
         media_group.append(InputMediaPhoto(media=url))
 
@@ -286,7 +289,10 @@ async def cmd_admin(message: types.Message, state: FSMContext):
 @admin_router.message(AdminState.waiting_for_password)
 async def process_admin_password(message: types.Message, state: FSMContext):
     """Проверяет пароль и предоставляет доступ к админ-панели."""
-    if message.text == ADMIN_PASSWORD:
+    # Получаем пароль из config_manager
+    current_admin_password = config_manager.get_setting('ADMIN_PASSWORD')
+
+    if message.text == current_admin_password:
         await message.answer("Добро пожаловать в админ-панель! Что хотите сделать?",
                              reply_markup=get_admin_main_markup())
         await state.set_state(AdminState.in_admin_panel)
@@ -300,7 +306,8 @@ def get_admin_main_markup():
         inline_keyboard=[
             [types.InlineKeyboardButton(text="Управление категориями", callback_data="admin_manage_categories")],
             [types.InlineKeyboardButton(text="Управление услугами", callback_data="admin_manage_services")],
-            [types.InlineKeyboardButton(text="👁️ Посмотреть услуги (как пользователь)", callback_data="admin_view_public_services")],
+            [types.InlineKeyboardButton(text="Посмотреть услуги (как пользователь)", callback_data="admin_view_public_services")],
+            [types.InlineKeyboardButton(text="Изменить пароль админа", callback_data="admin_change_password")],
             [types.InlineKeyboardButton(text="Выйти из админ-панели", callback_data="admin_exit")],
         ]
     )
@@ -309,7 +316,8 @@ def get_admin_main_markup():
     AdminState.in_admin_panel,
     AdminState.manage_categories,
     AdminState.manage_services,
-    AdminState.viewing_public_services_mode
+    AdminState.viewing_public_services_mode,
+    AdminState.change_password_waiting_for_new_password
 ))
 async def admin_main_menu_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработчик кнопки возврата в главное меню админ-панели."""
@@ -326,8 +334,7 @@ async def admin_exit_callback(callback: types.CallbackQuery, state: FSMContext):
     await send_main_menu(callback)
 
 
-# --- НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ПРОСМОТРА УСЛУГ АДМИНОМ (как пользователь) ---
-# ИЗМЕНЕНИЕ ЗДЕСЬ: Добавляем AdminState.viewing_public_services_mode в StateFilter
+# --- ОБРАБОТЧИКИ ДЛЯ ПРОСМОТРА УСЛУГ АДМИНОМ (как пользователь) ---
 @admin_router.callback_query(F.data == "admin_view_public_services", StateFilter(AdminState.in_admin_panel, AdminState.viewing_public_services_mode))
 async def admin_show_public_services_main_menu(callback: types.CallbackQuery, state: FSMContext):
     """
@@ -368,8 +375,7 @@ async def admin_view_service_category_callback(callback: types.CallbackQuery):
     current_category = db_utils.get_category_by_slug(category_slug)
     if not current_category:
         await callback.message.answer("Извините, информация по данной категории не найдена.")
-        # Исправлено: возвращаемся в меню категорий просмотра для админа
-        await admin_show_public_services_main_menu(callback, None) # Передаем None для state, т.к. уже в FSM-состоянии
+        await admin_show_public_services_main_menu(callback, None)
         return
 
     subcategories = db_utils.get_subcategories(category_slug)
@@ -422,7 +428,6 @@ async def admin_view_service_subcategory_callback(callback: types.CallbackQuery)
     parts = callback.data.split('::')
     if len(parts) < 3:
         await callback.message.answer("Извините, некорректные данные подкатегории.")
-        # Исправлено: возвращаемся в меню категорий просмотра для админа
         await admin_show_public_services_main_menu(callback, None)
         return
 
@@ -433,7 +438,6 @@ async def admin_view_service_subcategory_callback(callback: types.CallbackQuery)
 
     if not subcategory_data:
         await callback.message.answer("Извините, информация по данной подкатегории не найдена.")
-        # Исправлено: возвращаемся в меню категорий просмотра для админа
         await admin_show_public_services_main_menu(callback, None)
         return
 
@@ -485,7 +489,7 @@ async def admin_manage_categories(callback: types.CallbackQuery, state: FSMConte
 @admin_router.callback_query(F.data == "admin_add_category", AdminState.manage_categories)
 async def admin_add_category_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    await callback.message.edit_text("Введите уникальный SLUG для новой категории (например, `new_category_slug`):",
+    await callback.message.edit_text("Введите уникальный идентификатор для новой категории (например, `nails_new`):",
                                      reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
                                          [types.InlineKeyboardButton(text="Отмена", callback_data="admin_manage_categories")]
                                      ]))
@@ -495,11 +499,11 @@ async def admin_add_category_start(callback: types.CallbackQuery, state: FSMCont
 async def admin_add_category_get_slug(message: types.Message, state: FSMContext):
     slug = message.text.strip().lower()
     if not slug.replace('_', '').isalnum():
-        await message.answer("SLUG должен содержать только латинские буквы, цифры и символ подчеркивания. Попробуйте еще раз.")
+        await message.answer("Идентификатор должен содержать только латинские буквы, цифры и символ подчеркивания. Попробуйте еще раз.")
         return
 
     if db_utils.get_category_by_slug(slug):
-        await message.answer("Такой SLUG уже существует. Пожалуйста, придумайте уникальный SLUG:",
+        await message.answer("Такой идентификатор уже существует. Пожалуйста, придумайте уникальный идентификатор:",
                              reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
                                  [types.InlineKeyboardButton(text="Отмена", callback_data="admin_manage_categories")]
                              ]))
@@ -913,12 +917,44 @@ async def admin_delete_service_confirm(callback: types.CallbackQuery, state: FSM
                                      reply_markup=get_manage_services_markup())
     await state.set_state(AdminState.manage_services)
 
+# --- ОБРАБОТЧИКИ ДЛЯ ИЗМЕНЕНИЯ ПАРОЛЯ ---
+@admin_router.callback_query(F.data == "admin_change_password", AdminState.in_admin_panel)
+async def admin_change_password_start(callback: types.CallbackQuery, state: FSMContext):
+    """Начинает процесс изменения пароля админа."""
+    await callback.answer()
+    await callback.message.edit_text("Пожалуйста, введите НОВЫЙ пароль для админ-панели:",
+                                     reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                                         [types.InlineKeyboardButton(text="Отмена", callback_data="admin_main_menu")]
+                                     ]))
+    await state.set_state(AdminState.change_password_waiting_for_new_password)
+
+@admin_router.message(AdminState.change_password_waiting_for_new_password)
+async def admin_change_password_get_new(message: types.Message, state: FSMContext):
+    """Получает новый пароль и обновляет его в config.json."""
+    new_password = message.text.strip()
+
+    if not new_password:
+        await message.answer("Пароль не может быть пустым. Пожалуйста, введите новый пароль:")
+        return
+
+    # СОХРАНЯЕМ НОВЫЙ ПАРОЛЬ ЧЕРЕЗ config_manager
+    config_manager.set_setting('ADMIN_PASSWORD', new_password)
+
+    await message.answer(f"Пароль администратора успешно изменен на: <code>{new_password}</code>",
+                         reply_markup=get_admin_main_markup())
+    await state.set_state(AdminState.in_admin_panel)
+
 
 # Регистрируем роутер админ-панели в основном диспетчере
 dp.include_router(admin_router)
 
 # --- Основная функция запуска бота ---
 async def main() -> None:
+    # Инициализация базы данных (если необходимо, для категорий/услуг)
+    # Предполагается, что db_utils.py содержит init_db() или подобную функцию
+    if hasattr(db_utils, 'init_db'):
+        db_utils.init_db()
+
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
@@ -927,4 +963,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         exit()
-
