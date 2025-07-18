@@ -1,5 +1,6 @@
 # db_utils.py
 import sqlite3
+import datetime # Импортируем для работы с датами
 
 DATABASE_NAME = 'salon_services.db'
 
@@ -9,7 +10,50 @@ def get_connection():
     conn.row_factory = sqlite3.Row # Позволяет получать строки как объекты, к которым можно обращаться по имени колонки
     return conn
 
-def get_main_categories():
+def init_db():
+    """Инициализирует базу данных: создает таблицы, если они не существуют."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    # Таблица для категорий услуг
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT UNIQUE NOT NULL,
+            title TEXT NOT NULL,
+            parent_slug TEXT,
+            FOREIGN KEY (parent_slug) REFERENCES categories (slug) ON DELETE CASCADE
+        )
+    ''')
+    # Таблица для услуг
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS services (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            price TEXT NOT NULL,
+            description TEXT,
+            category_slug TEXT NOT NULL,
+            FOREIGN KEY (category_slug) REFERENCES categories (slug) ON DELETE CASCADE
+        )
+    ''')
+    # НОВАЯ Таблица для записей клиентов
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bookings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            user_phone TEXT NOT NULL,
+            service_id INTEGER NOT NULL,
+            booking_date TEXT NOT NULL, -- Формат YYYY-MM-DD
+            booking_time TEXT NOT NULL, -- Формат HH:MM
+            comment TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (service_id) REFERENCES services (id) ON DELETE CASCADE
+        )
+    ''')
+    conn.commit()
+    conn.close()
+    print("База данных инициализирована.") # Для отладки
+
+def get_main_categories(): # <--- ВОТ ЭТА ФУНКЦИЯ ДОЛЖНА БЫТЬ
     """Возвращает список основных категорий (у которых нет родителя)."""
     conn = get_connection()
     cursor = conn.cursor()
@@ -160,3 +204,53 @@ def delete_service(service_id: int):
     conn.commit()
     conn.close()
 
+# --- НОВЫЕ ФУНКЦИИ ДЛЯ РАБОТЫ С ЗАПИСЯМИ ---
+
+def add_booking(user_id: int, user_phone: str, service_id: int, booking_date: str, booking_time: str, comment: str = None):
+    """Добавляет новую запись в БД."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO bookings (user_id, user_phone, service_id, booking_date, booking_time, comment) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, user_phone, service_id, booking_date, booking_time, comment)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Ошибка при добавлении записи: {e}")
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+def get_booked_slots_for_date_service(booking_date: str, service_id: int):
+    """Возвращает список забронированных временных слотов для конкретной даты и услуги."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT booking_time FROM bookings WHERE booking_date = ? AND service_id = ?",
+        (booking_date, service_id)
+    )
+    booked_times = [row["booking_time"] for row in cursor.fetchall()]
+    conn.close()
+    return booked_times
+
+def get_user_bookings(user_id: int):
+    """Возвращает все записи конкретного пользователя."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        '''
+        SELECT b.id, s.name as service_name, c.title as category_name, b.booking_date, b.booking_time, b.comment, b.user_phone
+        FROM bookings b
+        JOIN services s ON b.service_id = s.id
+        JOIN categories c ON s.category_slug = c.slug
+        WHERE b.user_id = ?
+        ORDER BY b.booking_date, b.booking_time
+        ''',
+        (user_id,)
+    )
+    bookings = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return bookings

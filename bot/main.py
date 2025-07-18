@@ -1,14 +1,16 @@
 import asyncio
 import logging
+import datetime
+import calendar
 
 from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, StateFilter
 from aiogram.client.default import DefaultBotProperties
-from aiogram.types import InputMediaPhoto, Message
+from aiogram.types import InputMediaPhoto, Message, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import config_manager
 import db_utils
@@ -19,12 +21,17 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # ЗАГРУЗКА НАСТРОЕК ИЗ config_manager
 BOT_TOKEN = config_manager.get_setting('BOT_TOKEN')
 ADMIN_USERNAME = config_manager.get_setting('ADMIN_USERNAME')
-PHOTO_URLS = config_manager.get_setting('PHOTO_URLS', []) # Пустой список по умолчанию, если нет фото
+PHOTO_URLS = config_manager.get_setting('PHOTO_URLS', [])
 
 # Инициализация объекта Bot и Dispatcher
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 admin_router = Router()
+booking_router = Router()
+
+# Регистрируем роутеры в основном диспетчере
+dp.include_router(admin_router)
+dp.include_router(booking_router)
 
 # --- FSM States for Admin Panel ---
 class AdminState(StatesGroup):
@@ -55,11 +62,22 @@ class AdminState(StatesGroup):
 
     delete_service_select = State()
 
-    # NEW STATE for admin viewing public services
+    # State for admin viewing public services
     viewing_public_services_mode = State()
 
-    # NEW STATE for changing admin password
+    # State for changing admin password
     change_password_waiting_for_new_password = State()
+
+
+# --- FSM States для системы записи клиентов ---
+class BookingState(StatesGroup):
+    choosing_category = State()
+    choosing_service = State()
+    choosing_date = State()
+    choosing_time = State()
+    entering_comment = State()
+    entering_phone = State()
+    confirming_booking = State()
 
 
 # --- Вспомогательная функция для отправки главного меню ---
@@ -74,9 +92,12 @@ async def send_main_menu(target: types.Message | types.CallbackQuery):
         inline_keyboard=[
             [types.InlineKeyboardButton(text="✨ Наши услуги", callback_data="show_services_main_menu")],
             [types.InlineKeyboardButton(text="📸 Фотографии салона", callback_data="show_salon_photos")],
+            [types.InlineKeyboardButton(text="📝 Записаться на услугу", callback_data="start_booking")],
+            [types.InlineKeyboardButton(text="🗓️ Мои записи", callback_data="show_my_bookings")],
             [types.InlineKeyboardButton(text="📍 Как до нас добраться?", url="https://yandex.ru/maps/54/yekaterinburg/?from=api-maps&ll=60.607417%2C56.855225&mode=routes&origin=jsapi_2_1_79&rtext=~56.855225%2C60.607417&ruri=~ymapsbm1%3A%2F%2Forg%3Foid%3D176318285490&z=13.89")],
             [types.InlineKeyboardButton(text="💌 Связаться с администратором",
                                         url=f"tg://resolve?domain={ADMIN_USERNAME}")],
+
         ]
     )
 
@@ -93,13 +114,13 @@ async def send_main_menu(target: types.Message | types.CallbackQuery):
         if target.message.text:
             try:
                 await target.message.edit_text(welcome_message, reply_markup=markup)
-            except Exception:
+            except Exception: # Если сообщение уже изменено или удалено
                 await target.message.answer(welcome_message, reply_markup=markup)
-        else:
+        else: # Если callback.message был от медиа группы, у него нет текста
             await target.message.answer(welcome_message, reply_markup=markup)
 
 
-#Обработчики команд и кнопок
+# --- ОБРАБОТЧИКИ КОМАНД И КНОПОК ДЛЯ ОБЫЧНЫХ ПОЛЬЗОВАТЕЛЕЙ ---
 
 @dp.message(CommandStart())
 async def command_start_handler(message: types.Message, state: FSMContext) -> None:
@@ -266,19 +287,497 @@ async def process_photos_callback(callback: types.CallbackQuery):
     )
 
 
-# ИЗМЕНЕНИЕ ЗДЕСЬ: Добавляем StateFilter, чтобы этот обработчик не срабатывал, когда админ находится в админ-панели
-@dp.callback_query(F.data == "back_to_main_menu", ~StateFilter(AdminState))
+@dp.callback_query(F.data == "back_to_main_menu", ~StateFilter(AdminState, BookingState))
 async def process_back_to_main_menu(callback: types.CallbackQuery, state: FSMContext):
     """
     Обработчик нажатия на кнопку "Назад в главное меню" для ОБЫЧНЫХ ПОЛЬЗОВАТЕЛЕЙ.
-    Не срабатывает, если пользователь находится в любом админском FSM-состоянии.
+    Не срабатывает, если пользователь находится в любом админском или любом состоянии записи FSM.
     """
     await state.clear()
     await callback.answer()
     await send_main_menu(callback)
 
 
-# --- Админ-панель ---
+# --- БЛОК: Мои записи ---
+@dp.callback_query(F.data == "show_my_bookings")
+async def show_my_bookings(callback: types.CallbackQuery):
+    await callback.answer("Загружаю ваши записи...", show_alert=False)
+    user_id = callback.from_user.id
+    bookings = db_utils.get_user_bookings(user_id)
+
+    if not bookings:
+        message_text = "У вас пока нет активных записей. Хотите записаться?"
+    else:
+        message_text = "<b>Ваши предстоящие записи:</b>\n\n"
+        for i, booking in enumerate(bookings):
+            # Форматируем дату для более читаемого вида
+            formatted_date = datetime.datetime.strptime(booking['booking_date'], '%Y-%m-%d').strftime('%d.%m.%Y')
+            message_text += (
+                f"Запись №{i+1}:\n"
+                f"  📅 Дата: <b>{formatted_date}</b>\n"
+                f"  ⏰ Время: <b>{booking['booking_time']}</b>\n"
+                f"  💅 Услуга: <b>{booking['service_name']}</b> (Категория: {booking['category_name']})\n"
+                f"  💬 Комментарий: <i>{booking['comment'] if booking['comment'] else 'нет'}</i>\n"
+                f"  📞 Ваш номер: <code>{booking['user_phone']}</code>\n\n"
+            )
+
+    markup = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text="📝 Записаться на услугу", callback_data="start_booking")],
+            [types.InlineKeyboardButton(text="⬅️ Назад в главное меню", callback_data="back_to_main_menu")],
+        ]
+    )
+    await callback.message.edit_text(message_text, reply_markup=markup)
+
+
+# --- БЛОК: Функционал записи клиентов ---
+
+@booking_router.callback_query(F.data == "start_booking")
+async def booking_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Начинаем запись...", show_alert=False)
+    await state.clear() # Очищаем предыдущие данные записи
+
+    markup = InlineKeyboardBuilder()
+    main_categories = db_utils.get_main_categories()
+
+    if not main_categories:
+        await callback.message.edit_text("Извините, пока нет доступных категорий услуг для записи. Пожалуйста, попробуйте позже.",
+                                         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                                             [types.InlineKeyboardButton(text="⬅️ Назад в главное меню", callback_data="back_to_main_menu")]
+                                         ]))
+        await state.clear()
+        return
+
+    for category in main_categories:
+        markup.button(text=f"✨ {category['title']}", callback_data=f"book_cat::{category['slug']}")
+
+    markup.row(types.InlineKeyboardButton(text="⬅️ Назад в главное меню", callback_data="back_to_main_menu"))
+    await callback.message.edit_text("<b>📝 Запись на услугу:</b>\nВыберите категорию услуги:", reply_markup=markup.as_markup())
+    await state.set_state(BookingState.choosing_category)
+
+
+@booking_router.callback_query(F.data.startswith("book_cat::"), BookingState.choosing_category)
+async def booking_choose_category(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Загружаю услуги...", show_alert=False)
+    category_slug = callback.data.split("::")[1]
+    current_category = db_utils.get_category_by_slug(category_slug)
+
+    if not current_category:
+        await callback.message.edit_text("Категория не найдена. Пожалуйста, выберите другую.",
+                                         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                                             [types.InlineKeyboardButton(text="⬅️ Назад к категориям", callback_data="start_booking")]
+                                         ]))
+        return
+
+    # Сохраняем текущий slug категории для удобства возврата
+    await state.update_data(current_booking_category_slug=category_slug)
+
+    subcategories = db_utils.get_subcategories(category_slug)
+    if subcategories:
+        markup = InlineKeyboardBuilder()
+        for sub_data in subcategories:
+            markup.button(text=f"▪️ {sub_data['title']}", callback_data=f"book_sub::{category_slug}::{sub_data['slug']}")
+        markup.row(types.InlineKeyboardButton(text="⬅️ Назад к категориям", callback_data="start_booking"))
+        await callback.message.edit_text(f"<b>{current_category['title']}:</b>\nВыберите подкатегорию:", reply_markup=markup.as_markup())
+        # Состояние остается choosing_category, пока не выберем конкретную услугу
+        # await state.set_state(BookingState.choosing_category)
+    else:
+        # Если подкатегорий нет, сразу показываем услуги из этой категории
+        await _send_services_for_booking(callback, state, category_slug, "start_booking") # Возврат к началу выбора категории
+
+
+@booking_router.callback_query(F.data.startswith("book_sub::"), BookingState.choosing_category)
+async def booking_choose_subcategory(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Загружаю услуги...", show_alert=False)
+    parts = callback.data.split("::")
+    parent_category_slug = parts[1] # Для кнопки "Назад"
+    subcategory_slug = parts[2]
+    # Сохраняем текущий slug подкатегории для удобства возврата
+    await state.update_data(current_booking_category_slug=subcategory_slug, parent_category_slug_for_booking=parent_category_slug)
+    await _send_services_for_booking(callback, state, subcategory_slug, f"book_cat::{parent_category_slug}")
+
+
+async def _send_services_for_booking(callback: types.CallbackQuery, state: FSMContext, category_slug: str, back_callback_data: str):
+    """Вспомогательная функция для отправки списка услуг для выбора записи."""
+    services = db_utils.get_services_by_category_slug(category_slug)
+    category_title = db_utils.get_category_by_slug(category_slug)['title']
+
+    if not services:
+        await callback.message.edit_text(f"В категории <b>'{category_title}'</b> пока нет услуг для записи.",
+                                         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                                             [types.InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback_data)]
+                                         ]))
+        return
+
+    markup = InlineKeyboardBuilder()
+    text = f"<b>{category_title}:</b>\nВыберите услугу для записи:\n\n"
+    for svc in services:
+        markup.button(text=f"✨ {svc['name']} - {svc['price']}", callback_data=f"book_svc::{svc['id']}")
+        text += f"▪️ <b>{svc['name']}</b> - {svc['price']}\n"
+        if svc.get('description'):
+            text += f"   <i>{svc['description']}</i>\n"
+
+    markup.row(types.InlineKeyboardButton(text="⬅️ Назад", callback_data=back_callback_data))
+    await callback.message.edit_text(text, reply_markup=markup.as_markup())
+    await state.set_state(BookingState.choosing_service)
+
+
+@booking_router.callback_query(F.data.startswith("book_svc::"), BookingState.choosing_service)
+async def booking_select_service(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Выбрана услуга...", show_alert=False)
+    service_id = int(callback.data.split("::")[1])
+    service = db_utils.get_service_by_id(service_id)
+
+    if not service:
+        await callback.message.edit_text("Услуга не найдена. Попробуйте еще раз.",
+                                         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                                             [types.InlineKeyboardButton(text="⬅️ Назад к выбору услуг", callback_data="start_booking")]
+                                         ]))
+        return
+
+    await state.update_data(chosen_service_id=service_id, chosen_service_name=service['name'],
+                            chosen_service_category_slug=service['category_slug']) # Сохраняем для возврата
+
+    await callback.message.edit_text(f"Вы выбрали услугу: <b>{service['name']}</b>. \n\nТеперь выберите желаемую дату:",
+                                     reply_markup=await create_calendar_markup())
+    await state.set_state(BookingState.choosing_date)
+
+
+# --- Функции для календаря ---
+async def create_calendar_markup(year: int = None, month: int = None):
+    now = datetime.datetime.now()
+    if year is None:
+        year = now.year
+    if month is None:
+        month = now.month
+
+    cal = calendar.Calendar()
+    month_days = cal.monthdayscalendar(year, month)
+
+    markup = InlineKeyboardBuilder()
+
+    # Заголовок: месяц и год
+    markup.row(types.InlineKeyboardButton(text=f"{calendar.month_name[month]} {year}", callback_data="ignore_calendar"))
+
+    # Дни недели
+    week_days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    markup.row(*[types.InlineKeyboardButton(text=day, callback_data="ignore_calendar") for day in week_days])
+
+    # Дни месяца
+    for week in month_days:
+        row_buttons = []
+        for day in week:
+            if day == 0: # Пустые ячейки (дни из предыдущего/следующего месяца)
+                row_buttons.append(types.InlineKeyboardButton(text=" ", callback_data="ignore_calendar"))
+            else:
+                current_date = datetime.date(year, month, day)
+                # Проверяем, не прошла ли дата
+                if current_date < now.date():
+                    row_buttons.append(types.InlineKeyboardButton(text=str(day), callback_data="ignore_calendar")) # Неактивная кнопка
+                else:
+                    row_buttons.append(types.InlineKeyboardButton(text=str(day), callback_data=f"cal_day::{current_date.strftime('%Y-%m-%d')}"))
+        markup.row(*row_buttons)
+
+    # Кнопки навигации по месяцам
+    prev_month_date = (datetime.date(year, month, 1) - datetime.timedelta(days=1))
+    next_month_date = (datetime.date(year, month, 1) + datetime.timedelta(days=32))
+
+    markup.row(
+        types.InlineKeyboardButton(text="⬅️", callback_data=f"cal_nav::{prev_month_date.year}::{prev_month_date.month}"),
+        types.InlineKeyboardButton(text="➡️", callback_data=f"cal_nav::{next_month_date.year}::{next_month_date.month}")
+    )
+    markup.row(types.InlineKeyboardButton(text="⬅️ Назад к выбору услуги", callback_data="book_back_to_service_selection"))
+    return markup.as_markup()
+
+@booking_router.callback_query(F.data.startswith("cal_nav::"), BookingState.choosing_date)
+async def process_calendar_navigation(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer(show_alert=False)
+    parts = callback.data.split("::")
+    year = int(parts[1])
+    month = int(parts[2])
+    await callback.message.edit_reply_markup(reply_markup=await create_calendar_markup(year, month))
+
+@booking_router.callback_query(F.data == "ignore_calendar", BookingState.choosing_date)
+async def ignore_calendar_callback(callback: types.CallbackQuery):
+    await callback.answer(show_alert=False) # Просто игнорируем нажатие на дни недели или пустые ячейки
+
+@booking_router.callback_query(F.data == "book_back_to_service_selection", BookingState.choosing_date)
+async def book_back_to_service_selection(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Возврат к выбору услуги...", show_alert=False)
+    data = await state.get_data()
+    chosen_service_category_slug = data.get('chosen_service_category_slug')
+
+    if chosen_service_category_slug:
+        # Пытаемся вернуться к списку услуг в той же категории
+        await _send_services_for_booking(callback, state, chosen_service_category_slug, "start_booking")
+    else:
+        # Если почему-то нет slug, возвращаемся к началу выбора категорий для записи
+        await booking_start(callback, state)
+
+
+@booking_router.callback_query(F.data.startswith("cal_day::"), BookingState.choosing_date)
+async def booking_select_date(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Выбрана дата...", show_alert=False)
+    chosen_date_str = callback.data.split("::")[1]
+    chosen_date = datetime.datetime.strptime(chosen_date_str, '%Y-%m-%d').date()
+
+    await state.update_data(chosen_date=chosen_date_str)
+
+    await callback.message.edit_text(f"Выбрана дата: <b>{chosen_date.strftime('%d.%m.%Y')}</b>. \nТеперь выберите желаемое время:",
+                                     reply_markup=await create_time_slots_markup(state))
+    await state.set_state(BookingState.choosing_time)
+
+
+# --- Функции для выбора времени ---
+async def create_time_slots_markup(state: FSMContext):
+    data = await state.get_data()
+    chosen_date_str = data.get('chosen_date')
+    chosen_service_id = data.get('chosen_service_id')
+
+    if not chosen_date_str or not chosen_service_id:
+        logging.error("Chosen date or service ID not found in FSM context for time slot generation.")
+        # Предлагаем вернуться к выбору даты, чтобы восстановить контекст
+        return types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Ошибка: Вернуться к выбору даты", callback_data="book_back_to_date_selection")]
+        ])
+
+    booked_times = db_utils.get_booked_slots_for_date_service(chosen_date_str, chosen_service_id)
+    all_slots = []
+    # Салон работает с 9:00 до 20:00, интервал 30 минут
+    start_hour = 9
+    end_hour = 20 # Заканчиваем в 20:00, последний слот будет 19:30
+    interval_minutes = 30
+
+    current_time_dt = datetime.datetime.now()
+    today_str = current_time_dt.strftime('%Y-%m-%d')
+
+
+    for hour in range(start_hour, end_hour):
+        for minute_step in range(0, 60, interval_minutes):
+            slot_time = datetime.time(hour, minute_step)
+            slot_str = slot_time.strftime('%H:%M')
+
+            # Учитываем, что последний слот может быть 19:30, а салон работает до 20:00.
+            # Если хотим, чтобы 20:00 было последним доступным временем для начала, то end_hour = 21 и 0 минут.
+            # Для простоты, оставим так, как будто последний сеанс начинается в 19:30.
+            # Если 20:00 - это время ЗАКРЫТИЯ, а не начала последнего сеанса, то end_hour = 20, а последний сеанс,
+            # который может начаться, например, 19:30, если сеанс 30 минут.
+
+            # Проверяем, если текущая дата и текущий час/минута
+            is_past = False
+            if chosen_date_str == today_str:
+                combined_dt = datetime.datetime.combine(current_time_dt.date(), slot_time)
+                if combined_dt < current_time_dt:
+                    is_past = True
+
+            # Убеждаемся, что не добавляем слоты, если они уже прошли, или забронированы.
+            if not is_past and slot_str not in booked_times:
+                all_slots.append(slot_str)
+
+
+    markup = InlineKeyboardBuilder()
+    row_buttons = []
+    if not all_slots:
+        # Если нет доступных слотов, добавляем сообщение
+        markup.row(types.InlineKeyboardButton(text="На эту дату нет свободных временных слотов. Выберите другую дату.", callback_data="ignore_time_slot"))
+    else:
+        for slot in all_slots:
+            button = types.InlineKeyboardButton(text=slot, callback_data=f"book_time::{slot}")
+            row_buttons.append(button)
+            if len(row_buttons) == 4: # По 4 кнопки в ряд
+                markup.row(*row_buttons)
+                row_buttons = []
+        if row_buttons: # Добавляем оставшиеся кнопки
+            markup.row(*row_buttons)
+
+    markup.row(types.InlineKeyboardButton(text="⬅️ Назад к выбору даты", callback_data="book_back_to_date_selection"))
+    return markup.as_markup()
+
+@booking_router.callback_query(F.data == "ignore_time_slot", BookingState.choosing_time)
+async def ignore_time_slot_callback(callback: types.CallbackQuery):
+    await callback.answer("Это время занято или недоступно. Выберите другое.", show_alert=True)
+
+@booking_router.callback_query(F.data == "book_back_to_date_selection", BookingState.choosing_time)
+async def book_back_to_date_selection(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Возврат к выбору даты...", show_alert=False)
+    await callback.message.edit_text("Теперь выберите желаемую дату:",
+                                     reply_markup=await create_calendar_markup())
+    await state.set_state(BookingState.choosing_date)
+
+
+@booking_router.callback_query(F.data.startswith("book_time::"), BookingState.choosing_time)
+async def booking_select_time(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Выбрано время...", show_alert=False)
+    chosen_time_str = callback.data.split("::")[1]
+    await state.update_data(chosen_time=chosen_time_str)
+
+    await callback.message.edit_text(f"Вы выбрали время: <b>{chosen_time_str}</b>. \n\n"
+                                     "Оставьте комментарий к записи (например, особенности, пожелания). "
+                                     "Если комментарий не нужен, просто напишите `-` или `нет`:",
+                                     reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                                         [types.InlineKeyboardButton(text="⬅️ Назад к выбору времени", callback_data="book_back_to_time_selection")]
+                                     ]))
+    await state.set_state(BookingState.entering_comment)
+
+@booking_router.callback_query(F.data == "book_back_to_time_selection", BookingState.entering_comment)
+async def book_back_to_time_selection(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Возврат к выбору времени...", show_alert=False)
+    await callback.message.edit_text("Теперь выберите желаемое время:",
+                                     reply_markup=await create_time_slots_markup(state))
+    await state.set_state(BookingState.choosing_time)
+
+@booking_router.message(BookingState.entering_comment)
+async def booking_enter_comment(message: types.Message, state: FSMContext):
+    comment = message.text.strip()
+    if comment.lower() in ["-", "нет", "none", "n/a", "no"]:
+        comment = None
+    await state.update_data(comment=comment)
+
+    # Клавиатура для запроса номера телефона
+    request_phone_markup = types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="Поделиться номером телефона", request_contact=True)]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
+
+    await message.answer("Теперь, пожалуйста, укажите ваш номер телефона. "
+                         "Вы можете нажать кнопку 'Поделиться номером телефона' ниже или ввести его вручную:",
+                         reply_markup=request_phone_markup)
+    await state.set_state(BookingState.entering_phone)
+
+
+@booking_router.message(BookingState.entering_phone, F.contact)
+async def booking_get_phone_from_contact(message: types.Message, state: FSMContext):
+    phone_number = message.contact.phone_number
+    await state.update_data(phone=phone_number)
+    await _confirm_booking(message, state) # Переходим к подтверждению
+
+
+@booking_router.message(BookingState.entering_phone)
+async def booking_enter_phone_manually(message: types.Message, state: FSMContext):
+    phone_number = message.text.strip()
+    # Простая валидация номера телефона (можно улучшить регулярными выражениями)
+    # Например: import re; if not re.match(r"^\+?\d{10,15}$", phone_number):
+    if not (phone_number.startswith('+') and phone_number[1:].isdigit() and len(phone_number) > 8) and not (phone_number.isdigit() and len(phone_number) >= 10):
+        await message.answer("Пожалуйста, введите корректный номер телефона (например, +79XXXXXXXXX или 89XXXXXXXXX):",
+                             reply_markup=types.ReplyKeyboardRemove()) # Убираем reply-клавиатуру
+        return
+    await state.update_data(phone=phone_number)
+    await _confirm_booking(message, state) # Переходим к подтверждению
+
+async def _confirm_booking(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    service_name = data.get('chosen_service_name', 'Неизвестная услуга')
+    chosen_date_str = data.get('chosen_date', 'Не выбрана')
+    chosen_time_str = data.get('chosen_time', 'Не выбрано')
+    comment = data.get('comment', 'Нет')
+    phone = data.get('phone', 'Не указан')
+
+    # Убираем клавиатуру "Поделиться номером"
+    # Это может быть проблематично, если сообщение с клавиатурой не то, которое нужно редактировать.
+    # Лучше отправить новое сообщение и убрать клавиатуру.
+    if message.reply_markup and isinstance(message.reply_markup, types.ReplyKeyboardMarkup):
+        await message.answer("...", reply_markup=types.ReplyKeyboardRemove())
+        await message.delete() # Удаляем старое сообщение с reply-клавиатурой, если хотим
+
+    summary_text = (
+        "<b>Ваша запись:</b>\n\n"
+        f"💅 Услуга: <b>{service_name}</b>\n"
+        f"📅 Дата: <b>{datetime.datetime.strptime(chosen_date_str, '%Y-%m-%d').strftime('%d.%m.%Y')}</b>\n"
+        f"⏰ Время: <b>{chosen_time_str}</b>\n"
+        f"💬 Комментарий: <i>{comment if comment else 'нет'}</i>\n"
+        f"📞 Ваш номер: <code>{phone}</code>\n\n"
+        "Все верно?"
+    )
+
+    markup = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="✅ Подтвердить запись", callback_data="booking_confirm")],
+        [types.InlineKeyboardButton(text="❌ Отменить и начать заново", callback_data="booking_cancel")]
+    ])
+    await message.answer(summary_text, reply_markup=markup)
+    await state.set_state(BookingState.confirming_booking)
+
+
+@booking_router.callback_query(F.data == "booking_confirm", BookingState.confirming_booking)
+async def booking_final_confirm(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Подтверждаю запись...", show_alert=False)
+    data = await state.get_data()
+
+    user_id = callback.from_user.id
+    phone = data.get('phone')
+    service_id = data.get('chosen_service_id')
+    booking_date = data.get('chosen_date')
+    booking_time = data.get('chosen_time')
+    comment = data.get('comment')
+
+    if not all([user_id, phone, service_id, booking_date, booking_time]):
+        await callback.message.edit_text("Ошибка при подтверждении записи. Пожалуйста, попробуйте начать заново.",
+                                         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                                             [types.InlineKeyboardButton(text="📝 Начать запись заново", callback_data="start_booking")]
+                                         ]))
+        await state.clear()
+        return
+
+    success = db_utils.add_booking(user_id, phone, service_id, booking_date, booking_time, comment)
+
+    if success:
+        formatted_date = datetime.datetime.strptime(booking_date, '%Y-%m-%d').strftime('%d.%m.%Y')
+        await callback.message.edit_text(
+            f"🎉 Ваша запись на услугу <b>{data['chosen_service_name']}</b> на <b>{formatted_date}</b> в <b>{booking_time}</b> успешно создана!\n\n"
+            "Скоро с вами свяжется администратор для уточнения деталей. Спасибо, что выбрали нас! ✨",
+            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_to_main_menu")],
+                [types.InlineKeyboardButton(text="🗓️ Мои записи", callback_data="show_my_bookings")]
+            ])
+        )
+        # Отправка уведомления администратору
+        admin_id = config_manager.get_setting('ADMIN_USERNAME_ID')
+        if admin_id:
+            admin_message = (
+                "🔔 <b>НОВАЯ ЗАПИСЬ!</b>\n\n"
+                f"Клиент: <a href='tg://user?id={user_id}'>{callback.from_user.full_name}</a>\n"
+                f"Услуга: <b>{data['chosen_service_name']}</b>\n"
+                f"Дата: <b>{formatted_date}</b>\n"
+                f"Время: <b>{booking_time}</b>\n"
+                f"Номер телефона: <code>{phone}</code>\n"
+                f"Комментарий: <i>{comment if comment else 'нет'}</i>"
+            )
+            try:
+                await bot.send_message(chat_id=admin_id, text=admin_message, parse_mode=ParseMode.HTML)
+                logging.info(f"Уведомление о новой записи отправлено админу {admin_id}")
+            except Exception as e:
+                logging.error(f"Не удалось отправить уведомление админу {admin_id}: {e}")
+        else:
+            logging.warning("ADMIN_USERNAME_ID не настроен. Уведомление о новой записи не отправлено админу.")
+
+
+    else:
+        await callback.message.edit_text(
+            "Произошла ошибка при сохранении вашей записи. Пожалуйста, попробуйте еще раз или свяжитесь с администратором.",
+            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+                [types.InlineKeyboardButton(text="📝 Начать запись заново", callback_data="start_booking")],
+                [types.InlineKeyboardButton(text="💌 Связаться с администратором", url=f"tg://resolve?domain={ADMIN_USERNAME}")]
+            ])
+        )
+
+    await state.clear() # Очищаем состояние после завершения записи
+
+@booking_router.callback_query(F.data == "booking_cancel", BookingState.confirming_booking)
+async def booking_cancel(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer("Запись отменена.", show_alert=True)
+    await state.clear()
+    await callback.message.edit_text(
+        "Запись отменена. Вы можете начать процесс записи заново в любое время.",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="📝 Записаться на услугу", callback_data="start_booking")],
+            [types.InlineKeyboardButton(text="⬅️ В главное меню", callback_data="back_to_main_menu")]
+        ])
+    )
+
+
+# --- АДМИН-ПАНЕЛЬ ---
 @admin_router.message(CommandStart(magic=F.args == "admin"))
 @admin_router.message(F.text == "/admin")
 async def cmd_admin(message: types.Message, state: FSMContext):
@@ -289,7 +788,6 @@ async def cmd_admin(message: types.Message, state: FSMContext):
 @admin_router.message(AdminState.waiting_for_password)
 async def process_admin_password(message: types.Message, state: FSMContext):
     """Проверяет пароль и предоставляет доступ к админ-панели."""
-    # Получаем пароль из config_manager
     current_admin_password = config_manager.get_setting('ADMIN_PASSWORD')
 
     if message.text == current_admin_password:
@@ -317,7 +815,21 @@ def get_admin_main_markup():
     AdminState.manage_categories,
     AdminState.manage_services,
     AdminState.viewing_public_services_mode,
-    AdminState.change_password_waiting_for_new_password
+    AdminState.change_password_waiting_for_new_password,
+    AdminState.add_category_slug, # Добавлены состояния для корректного возврата
+    AdminState.add_category_title,
+    AdminState.add_category_parent,
+    AdminState.edit_category_select,
+    AdminState.edit_category_new_title,
+    AdminState.delete_category_select,
+    AdminState.select_category_for_service,
+    AdminState.add_service_name,
+    AdminState.add_service_price,
+    AdminState.add_service_description,
+    AdminState.edit_service_select,
+    AdminState.edit_service_choose_field,
+    AdminState.edit_service_new_value,
+    AdminState.delete_service_select
 ))
 async def admin_main_menu_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработчик кнопки возврата в главное меню админ-панели."""
@@ -375,7 +887,7 @@ async def admin_view_service_category_callback(callback: types.CallbackQuery):
     current_category = db_utils.get_category_by_slug(category_slug)
     if not current_category:
         await callback.message.answer("Извините, информация по данной категории не найдена.")
-        await admin_show_public_services_main_menu(callback, None)
+        await admin_show_public_services_main_menu(callback, None) # state=None потому что не используется
         return
 
     subcategories = db_utils.get_subcategories(category_slug)
@@ -428,7 +940,7 @@ async def admin_view_service_subcategory_callback(callback: types.CallbackQuery)
     parts = callback.data.split('::')
     if len(parts) < 3:
         await callback.message.answer("Извините, некорректные данные подкатегории.")
-        await admin_show_public_services_main_menu(callback, None)
+        await admin_show_public_services_main_menu(callback, None) # state=None
         return
 
     parent_category_slug = parts[1]
@@ -438,7 +950,7 @@ async def admin_view_service_subcategory_callback(callback: types.CallbackQuery)
 
     if not subcategory_data:
         await callback.message.answer("Извините, информация по данной подкатегории не найдена.")
-        await admin_show_public_services_main_menu(callback, None)
+        await admin_show_public_services_main_menu(callback, None) # state=None
         return
 
     services = db_utils.get_services_by_category_slug(subcategory_slug)
@@ -675,7 +1187,11 @@ async def send_category_selection(target: types.Message | types.CallbackQuery, s
     categories = db_utils.get_all_categories_flat()
     if not categories:
         await target.message.answer("Нет доступных категорий для выбора.")
-        await target.message.answer("Управление услугами:", reply_markup=get_manage_services_markup())
+        # Проверяем тип 'target', чтобы избежать ошибок при редактировании
+        if isinstance(target, types.CallbackQuery):
+            await target.message.edit_reply_markup(reply_markup=get_manage_services_markup()) # Изменяем сообщение с ошибкой
+        else:
+            await target.answer("Управление услугами:", reply_markup=get_manage_services_markup())
         await state.set_state(AdminState.manage_services)
         return
 
@@ -945,15 +1461,20 @@ async def admin_change_password_get_new(message: types.Message, state: FSMContex
     await state.set_state(AdminState.in_admin_panel)
 
 
-# Регистрируем роутер админ-панели в основном диспетчере
-dp.include_router(admin_router)
-
 # --- Основная функция запуска бота ---
 async def main() -> None:
-    # Инициализация базы данных (если необходимо, для категорий/услуг)
-    # Предполагается, что db_utils.py содержит init_db() или подобную функцию
+    # Инициализация базы данных
     if hasattr(db_utils, 'init_db'):
         db_utils.init_db()
+
+    # Для отправки уведомлений админу, лучше хранить ID, а не username.
+    # Если ADMIN_USERNAME_ID нет в config_manager, то надо его получить.
+    # Для получения ID админа, админ должен написать боту что-нибудь, и ты можешь логировать его message.from_user.id
+    admin_id = config_manager.get_setting('ADMIN_USERNAME_ID')
+    if not admin_id:
+        logging.warning("ADMIN_USERNAME_ID не найден в config.json. Уведомления админу могут не отправляться.")
+        logging.warning("Для получения ID админа, попросите админа написать боту, а затем найдите его user.id в логах.")
+
 
     await dp.start_polling(bot)
 
@@ -963,3 +1484,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         exit()
+

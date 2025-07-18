@@ -21,6 +21,7 @@ def load_config():
         default_config = {
             "BOT_TOKEN": "YOUR_BOT_TOKEN_HERE",
             "ADMIN_USERNAME": "YOUR_ADMIN_USERNAME_HERE",
+            "ADMIN_USERNAME_ID": None,  # НОВОЕ: Добавляем поле для ID админа
             "ADMIN_PASSWORD": "default_password",  # Дефолтный пароль
             "PHOTO_URLS": [
                 "https://example.com/placeholder_photo1.jpg",
@@ -37,6 +38,13 @@ def load_config():
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             _config_data = json.load(f)
         logging.info(f"Конфигурация успешно загружена из '{CONFIG_FILE}'.")
+
+        # НОВОЕ: Проверяем наличие нового поля и добавляем его, если отсутствует
+        if 'ADMIN_USERNAME_ID' not in _config_data:
+            _config_data['ADMIN_USERNAME_ID'] = None
+            save_config() # Сохраняем, чтобы новое поле появилось в файле
+            logging.info("Добавлено новое поле 'ADMIN_USERNAME_ID' в конфиг.")
+
     except json.JSONDecodeError as e:
         logging.error(f"Ошибка чтения JSON из '{CONFIG_FILE}': {e}. Убедитесь, что файл имеет корректный формат JSON.")
         _config_data = {}  # Очищаем конфиг, чтобы избежать использования некорректных данных
@@ -62,7 +70,7 @@ def get_setting(key: str, default_value=None):
     return _config_data.get(key, default_value)
 
 
-def set_setting(key: str, value: str):
+def set_setting(key: str, value): # Изменил тип на 'value', чтобы можно было сохранить None или int
     """Устанавливает значение настройки и сохраняет конфигурацию."""
     _config_data[key] = value
     save_config()
