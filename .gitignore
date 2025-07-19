@@ -32,7 +32,8 @@ Thumbs.db          # Windows specific
 # Instead, you might ignore specific values or provide a template.
 # config.ini
 # settings.py
-# .env
+.env
+config.json
 
 # Database files (if you use a local SQLite database for development)
 *.sqlite3
