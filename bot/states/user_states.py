@@ -1,4 +1,3 @@
-# your_bot_project/states/user_states.py
 from aiogram.fsm.state import State, StatesGroup
 
 class BookingState(StatesGroup):

@@ -1,4 +1,3 @@
-# your_bot_project/handlers/admin.py
 import logging
 
 from aiogram import Router, F
@@ -13,7 +12,7 @@ from keyboards.inline import (
     get_admin_main_markup,
     get_manage_categories_markup,
     get_manage_services_markup,
-    get_category_selection_markup  # Теперь эта функция просто возвращает клавиатуру
+    get_category_selection_markup,
 )
 
 admin_router = Router()
@@ -125,8 +124,7 @@ async def admin_view_service_category_callback(callback: CallbackQuery):
     if not current_category:
         await callback.message.answer("Извините, информация по данной категории не найдена.")
         # При ошибке возвращаемся в главное меню просмотра для админа, но не сбрасываем состояние
-        await admin_show_public_services_main_menu(callback,
-                                                   None)  # state=None потому что не используется в этой заглушке
+        await admin_show_public_services_main_menu(callback, None)
         return
 
     subcategories = db_utils.get_subcategories(category_slug)
@@ -361,7 +359,7 @@ async def admin_delete_category_start(callback: CallbackQuery, state: FSMContext
 
     # Генерация клавиатуры для выбора категории по ID
     markup = await get_category_selection_markup(callback_prefix="del_cat_select", for_edit_delete=True,
-                                                 return_to_admin_categories=True)  # <--- ИСПРАВЛЕНО
+                                                 return_to_admin_categories=True)
     await callback.message.edit_text("Выберите категорию для удаления (по ID). "
                                      "<b>ВНИМАНИЕ:</b> Категорию нельзя удалить, если у нее есть подкатегории или услуги!",
                                      reply_markup=markup)
@@ -420,7 +418,7 @@ async def admin_add_service_start(callback: CallbackQuery, state: FSMContext):
         return
 
     markup = await get_category_selection_markup(callback_prefix="add_service_cat",
-                                                 return_to_admin_services=True)  # <--- ИСПРАВЛЕНО
+                                                 return_to_admin_services=True)
     await callback.message.edit_text("Выберите категорию, в которую будет добавлена услуга:", reply_markup=markup)
     await state.set_state(AdminState.select_category_for_service)
 
@@ -497,7 +495,7 @@ async def admin_edit_service_start(callback: CallbackQuery, state: FSMContext):
         return
 
     markup = await get_category_selection_markup(callback_prefix="edit_service_cat",
-                                                 return_to_admin_services=True)  # <--- ИСПРАВЛЕНО
+                                                 return_to_admin_services=True)
     await callback.message.edit_text("Выберите категорию, услугу из которой вы хотите изменить:", reply_markup=markup)
     await state.set_state(AdminState.select_category_for_service)
 
@@ -635,7 +633,7 @@ async def admin_delete_service_start(callback: CallbackQuery, state: FSMContext)
         return
 
     markup = await get_category_selection_markup(callback_prefix="del_service_cat",
-                                                 return_to_admin_services=True)  # <--- ИСПРАВЛЕНО
+                                                 return_to_admin_services=True)
     await callback.message.edit_text("Выберите категорию, услугу из которой вы хотите удалить:", reply_markup=markup)
     await state.set_state(AdminState.select_category_for_service)
 

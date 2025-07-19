@@ -1,4 +1,3 @@
-# db_utils.py
 import sqlite3
 import datetime # Импортируем для работы с датами
 

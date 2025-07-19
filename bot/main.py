@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 bot = Bot(token=config_manager.get_setting('BOT_TOKEN'), default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# Регистрируем роутеры из наших модулей
+# Регистрируем роутеры из наших модулей\
 dp.include_router(admin.admin_router)
 dp.include_router(users.user_router)
 
@@ -48,7 +48,6 @@ async def process_back_to_main_menu(callback: CallbackQuery, state: FSMContext) 
     """
     await state.clear()
     await callback.answer()
-    # Теперь передаем admin_username напрямую, как ожидает send_main_menu
     await send_main_menu(target=callback, admin_username=config_manager.get_setting('ADMIN_USERNAME'))
 
 async def main() -> None:
@@ -56,7 +55,6 @@ async def main() -> None:
     if hasattr(db_utils, 'init_db'):
         db_utils.init_db()
 
-    # Для отправки уведомлений админу, лучше хранить ID, а не username.
     admin_id = config_manager.get_setting('ADMIN_USERNAME_ID')
     if not admin_id:
         logging.warning("ADMIN_USERNAME_ID не найден в config.json. Уведомления админу могут не отправляться.")

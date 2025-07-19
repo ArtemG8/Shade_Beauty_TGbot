@@ -1,7 +1,7 @@
 # db_init.py
 import sqlite3
 
-# Ваши данные об услугах (скопируйте сюда полный SERVICES_DATA)
+# Данные об услугах
 SERVICES_DATA = {
     "стрижки": {
         "title": "Стрижки",

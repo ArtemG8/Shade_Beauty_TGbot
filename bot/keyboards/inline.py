@@ -21,9 +21,9 @@ async def send_main_menu(target: Message | CallbackQuery, admin_username: str) -
 
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📝 Записаться на услугу", callback_data="start_booking")],
             [InlineKeyboardButton(text="✨ Наши услуги", callback_data="show_services_main_menu")],
             [InlineKeyboardButton(text="📸 Фотографии салона", callback_data="show_salon_photos")],
+            [InlineKeyboardButton(text="📝 Записаться на услугу", callback_data="start_booking")],
             [InlineKeyboardButton(text="🗓️ Мои записи", callback_data="show_my_bookings")],
             [InlineKeyboardButton(text="📍 Как до нас добраться?",
                                   url="https://yandex.ru/maps/54/yekaterinburg/?from=api-maps&ll=60.607417%2C56.855225&mode=routes&origin=jsapi_2_1_79&rtext=~56.855225%2C60.607417&ruri=~ymapsbm1%3A%2F%2Forg%3Foid%3D176318285490&z=13.89")],

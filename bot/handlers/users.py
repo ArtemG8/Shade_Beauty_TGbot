@@ -1,4 +1,3 @@
-# your_bot_project/handlers/users.py
 import logging
 import datetime
 import calendar
@@ -25,7 +24,7 @@ user_router = Router()
 PHOTO_URLS = config_manager.get_setting('PHOTO_URLS', [])
 ADMIN_USERNAME = config_manager.get_setting('ADMIN_USERNAME')
 
-# --- ОБРАБОТЧИКИ ОБЫЧНЫХ ПОЛЬЗОВАТЕЛЕЙ ---
+#Обработчики пользователей
 
 @user_router.callback_query(F.data == "show_services_main_menu")
 async def process_services_main_menu_callback(callback: CallbackQuery):
@@ -183,7 +182,7 @@ async def process_photos_callback(callback: CallbackQuery):
     )
 
 
-# --- БЛОК: Мои записи ---
+#Мои записи
 @user_router.callback_query(F.data == "show_my_bookings")
 async def show_my_bookings(callback: CallbackQuery):
     await callback.answer("Загружаю ваши записи...", show_alert=False)
@@ -214,7 +213,7 @@ async def show_my_bookings(callback: CallbackQuery):
     await callback.message.edit_text(message_text, reply_markup=markup)
 
 
-# --- БЛОК: Функционал записи клиентов ---
+#Функционал записи клиентов
 
 @user_router.callback_query(F.data == "start_booking")
 async def booking_start(callback: CallbackQuery, state: FSMContext):
